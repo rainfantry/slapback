@@ -8,7 +8,12 @@ easier to lock in pitch and timing while you sing — you finish a phrase, hear 
 land a moment later, and correct on the fly.
 
 It's the same effect as the slight delay when you call your own number, but
-tuned deliberately and controllable in real time.
+tuned deliberately and controllable in real time — plus a live tuner so you can
+*see* your pitch while you correct it.
+
+<p align="center">
+  <img src="docs/screenshots/slapback.png" alt="Slapback — live delayed vocal monitor with waveform and tuner" width="320">
+</p>
 
 ---
 
@@ -16,6 +21,8 @@ tuned deliberately and controllable in real time.
 
 - Continuous **mic → delay → earbuds** monitoring while the button is on.
 - A **delay slider** you can move while singing (150 ms to 1000 ms).
+- A **live waveform** and a **tuner** — see the note you're singing and how
+  sharp or flat you are, in real time.
 - An **echo-cancellation toggle** for speaker use.
 - One screen. No accounts, no network, no nonsense.
 

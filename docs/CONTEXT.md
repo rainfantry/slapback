@@ -148,3 +148,43 @@ eas build --profile preview -p android       # outputs a sideloadable .apk
 - **EAS** — Expo's cloud build service that turns this code into an `.apk`.
 - **Dev client** — a special build of the app that lets your code reload
   instantly while you work, without rebuilding every time.
+
+---
+
+## 9. The live pitch layer (waveform + note + tuner)
+
+> Added on the `experiment/pitch-tuner` branch. While monitoring, the app
+> shows a scrolling sound wave, the note you're singing (e.g. "A4"), and a
+> needle showing how sharp or flat you are.
+
+It's a **second "lane"** that mirrors the audio lane and follows the same
+golden rule — the screen never touches the detector directly:
+
+```
+MonitorScreen ── usePitch ── pitchSource ── pitchfinder (YIN detector)
+       └── draws Waveform + TunerDisplay (display-only components)
+```
+
+- **`src/audio/pitchSource.js`** — the **pitch boundary**, the only file wired
+  to the note detector. Exposes `start()`, `stop()`, `subscribe(fn)`. It never
+  opens the mic — `audioEngine` already did. It reads the live sound from a
+  read-only "tap" (`audioEngine.getAnalyser()`) ~30×/second, runs the YIN
+  pitch detector, and emits `{ note, frequency, cents, level, waveform }`.
+- **`src/hooks/usePitch.js`** — keeps the fast wave data in refs (no re-render)
+  and lets only the note/cents text through ~12×/second, so 30Hz updates never
+  jank the screen.
+- **`src/pitch/pitchMath.js`** — small pure helpers: Hz→note+cents, silence
+  gate, in-tune check, needle smoothing.
+- **`src/components/Waveform.js`** / **`TunerDisplay.js`** — display only.
+  Drawn with `react-native-svg`.
+
+**How the engine changed:** `audioEngine.js` gained a read-only `AnalyserNode`
+("listening tap") on the mic and a `getAnalyser()` accessor. That is the only
+change to the audio engine; the mic→delay→speaker path is untouched.
+
+**Possible upgrade:** for glassier 60fps drawing, swap `react-native-svg` for
+`@shopify/react-native-skia` inside the two components — nothing else changes.
+
+**Detector facts:** YIN is good for a SINGLE voice (monophonic). Chords won't
+work. Very low notes can occasionally jump an octave; the silence gate and
+voice-range clamp (70–1100 Hz) keep it sane.

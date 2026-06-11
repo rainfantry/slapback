@@ -25,6 +25,11 @@ import { View, Text, Pressable, Switch, StyleSheet } from 'react-native';
 import Slider from '@react-native-community/slider';
 // Our middleman hook — gives us values to show and actions to call.
 import useDelayMonitor from '../hooks/useDelayMonitor';
+// The pitch layer: a hook that watches the live mic and the two displays
+// that show the sound wave and the note/tuner needle.
+import usePitch from '../hooks/usePitch';
+import Waveform from '../components/Waveform';
+import TunerDisplay from '../components/TunerDisplay';
 // Our colours and sizes, kept in one place.
 import { colors, sizes } from '../theme';
 
@@ -44,6 +49,11 @@ export default function MonitorScreen() {
 
   // Is the monitor currently live? True when running OR mid-start.
   const isOn = status === 'running' || status === 'starting';
+
+  // The pitch layer. We hand it the status so it only listens to the mic
+  // while we're actually monitoring. It gives us the note, the tuner needle
+  // value, and a box (ref) holding the latest sound wave for drawing.
+  const pitch = usePitch(status);
 
   // Work out the status line's words and dot colour from the status word.
   // We pick one row from this little lookup table based on "status".
@@ -86,6 +96,16 @@ export default function MonitorScreen() {
       {/* If there's an error message, show it in red underneath. */}
       {errorMessage ? (
         <Text style={styles.errorText}>{errorMessage}</Text>
+      ) : null}
+
+      {/* ---- LIVE PITCH: WAVEFORM + TUNER ------------------------- */}
+      {/* These only appear while monitoring. When stopped, this whole block
+          is skipped (renders nothing), so the screen looks the same as before. */}
+      {status === 'running' ? (
+        <>
+          <Waveform samplesRef={pitch.waveformRef} />
+          <TunerDisplay note={pitch.note} cents={pitch.cents} inTune={pitch.inTune} />
+        </>
       ) : null}
 
       {/* ---- DELAY CONTROL ---------------------------------------- */}

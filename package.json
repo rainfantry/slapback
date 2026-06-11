@@ -7,9 +7,11 @@
     "expo": "~56.0.11",
     "expo-dev-client": "~56.0.20",
     "expo-status-bar": "~56.0.4",
+    "pitchfinder": "^2.3.4",
     "react": "19.2.3",
     "react-native": "0.85.3",
-    "react-native-audio-api": "^0.12.2"
+    "react-native-audio-api": "^0.12.2",
+    "react-native-svg": "15.15.4"
   },
   "scripts": {
     "start": "expo start",

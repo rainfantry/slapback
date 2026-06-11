@@ -30,4 +30,7 @@ export const sizes = {
   hint: 13,             // tiny helper lines under controls.
   button: 210,          // width AND height of the big round Start/Stop button.
   gap: 22,              // the standard gap of empty space between sections.
+  note: 64,             // the big tuner note letter (e.g. "A4").
+  waveformHeight: 96,   // height of the scrolling sound-wave strip.
+  needleHeight: 44,     // height of the tuner needle track.
 };

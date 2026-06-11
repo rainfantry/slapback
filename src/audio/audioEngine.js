@@ -40,6 +40,8 @@ import { AudioContext, AudioRecorder, AudioManager } from 'react-native-audio-ap
 let context = null;       // the workbench (AudioContext) once we build it.
 let recorder = null;      // the live microphone once we open it.
 let delayNode = null;     // the delay buffer that holds sound for X milliseconds.
+let analyser = null;      // a "listening tap" on the mic, used by the pitch layer
+                          // to read the live sound wave (for the note + waveform).
 
 // These remember the user's chosen settings even while the engine is OFF,
 // so that pressing START later uses the values they already picked.
@@ -116,11 +118,24 @@ async function start(options) {
     // into the chain; this adapter is the socket it plugs into.
     const adapter = context.createRecorderAdapter();
 
-    // STEP 6: Wire the pedals together, in order:
-    //   bridge -> delay buffer ...
-    adapter.connect(delayNode);
-    //   ... delay buffer -> the speaker/earbuds (the "destination").
-    delayNode.connect(context.destination);
+    // STEP 6: Build the "listening tap" (analyser) for the pitch/waveform
+    // layer. An analyser is a PASS-THROUGH node: sound goes in one side and
+    // out the other UNCHANGED, but along the way the pitch layer gets to peek
+    // at the live wave. The key thing: it must sit INSIDE the path that reaches
+    // the speaker. If it just dangled off to the side, this audio engine would
+    // have no reason to push sound through it, and the tap would read silence
+    // (which is exactly the bug where the wave didn't move).
+    //   fftSize = how many samples it hands over at once (2048 = enough to
+    //   measure low notes). smoothingTimeConstant 0 = raw wave, no averaging.
+    analyser = context.createAnalyser();
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0;
+
+    // Wire the pedals together, in order:
+    //   bridge -> analyser (the tap) -> delay buffer -> speaker/earbuds.
+    adapter.connect(analyser);              // dry mic flows INTO the tap
+    analyser.connect(delayNode);            // tap passes the sound on to the delay
+    delayNode.connect(context.destination); // delay out to the speaker/earbuds
 
     // STEP 7: Open the actual microphone and plug it into the bridge.
     recorder = new AudioRecorder({
@@ -170,6 +185,7 @@ async function stop() {
   recorder = null;
   context = null;
   delayNode = null;
+  analyser = null;       // drop the listening tap too.
 
   // STEP 4: Unless we are reporting an error, mark ourselves stopped.
   if (status !== 'error') setStatus('idle');
@@ -230,6 +246,13 @@ function getLastError() {
   return lastError;              // a text message, or null if no error.
 }
 
+// Hand the pitch layer the "listening tap" so it can read the live sound wave.
+// Returns the analyser while running, or null when stopped. The pitch layer
+// only READS from this — it never changes the audio you hear.
+function getAnalyser() {
+  return analyser;
+}
+
 // =====================================================================
 // THE PUBLIC DOOR: bundle the five core functions (plus two helpers) into
 // one object and hand it out. The rest of the app only ever uses these.
@@ -242,4 +265,5 @@ export default {
   getStatus,        // read current status word
   onStatusChange,   // subscribe to status changes
   getLastError,     // read last error message
+  getAnalyser,      // hand the pitch layer the mic "listening tap"
 };

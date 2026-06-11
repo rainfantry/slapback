@@ -4,27 +4,20 @@
     "appVersionSource": "remote"
   },
   "build": {
-    "//": "Each block below is a 'profile' = a recipe for building the app.",
-
     "development": {
-      "//": "For day-to-day coding. Builds a dev-client APK you install once, then your JavaScript reloads instantly over wifi.",
       "developmentClient": true,
       "distribution": "internal",
       "android": {
         "buildType": "apk"
       }
     },
-
     "preview": {
-      "//": "A real, standalone APK you can sideload straight onto a phone — no Play Store, no dev server needed. This is the one to share.",
       "distribution": "internal",
       "android": {
         "buildType": "apk"
       }
     },
-
     "production": {
-      "//": "Same as preview but for a final release build.",
       "android": {
         "buildType": "apk"
       }

@@ -1,0 +1,29 @@
+// =====================================================================
+// build.gradle — THE BUILD RECIPE FOR THE KOTLIN MODULE
+// ---------------------------------------------------------------------
+// PLAIN ENGLISH: Android needs a "recipe" telling it how to compile our
+// Kotlin code into the app. This is a standard Expo local-module recipe.
+// You almost never touch this — it just wires our module into Expo's
+// build system so the Kotlin in this folder gets compiled with the app.
+// =====================================================================
+
+apply plugin: 'com.android.library'
+
+group = 'expo.modules.aecmonitor'
+version = '0.1.0'
+
+// Pull in Expo's shared build helpers (these define the functions used below).
+def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
+apply from: expoModulesCorePlugin
+applyKotlinExpoModulesCorePlugin()   // turn on Kotlin support
+useCoreDependencies()                // give us access to the Expo Modules API
+useExpoPublishing()                  // standard packaging
+useDefaultAndroidSdkVersions()       // match the app's Android SDK versions
+
+android {
+  namespace "expo.modules.aecmonitor"
+  defaultConfig {
+    versionCode 1
+    versionName "0.1.0"
+  }
+}

@@ -1,0 +1,3 @@
+<!-- Empty manifest for the library module. The microphone permission is
+     declared by the main app (in app.json), so nothing extra is needed here. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" />

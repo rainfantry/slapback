@@ -2,244 +2,162 @@
 // audioEngine.js — THE AUDIO BOUNDARY (the only file that touches sound)
 // ---------------------------------------------------------------------
 // PLAIN ENGLISH:
-// This is the ONLY place in the whole app that talks to the phone's
-// microphone and speaker. Everything else in the app just calls the five
-// simple functions at the bottom (start, stop, setDelay, setEchoCancel,
-// getStatus) and never worries about HOW the sound works.
+// This is the ONLY place in the app that talks to the mic and speaker.
+// Everything else just calls the five functions at the bottom
+// (start, stop, setDelay, setEchoCancel, getStatus).
 //
-// What this engine does, in one sentence:
-//   It takes sound coming IN from the mic, holds it for a chosen number
-//   of milliseconds (the "delay"), then plays it back OUT the speaker or
-//   earbuds — over and over, continuously — so a singer hears their own
-//   voice a fraction of a second late and can correct on the fly.
+// There are TWO ways to make sound, and we pick one based on the phone:
 //
-// The chain of sound looks like this:
-//   MICROPHONE  ->  (bridge)  ->  DELAY BUFFER  ->  SPEAKER / EARBUDS
+//   • ANDROID  -> our own Kotlin module ("AecMonitor"). It can do real
+//                 echo cancellation by running on the phone-call pathway.
+//   • iPHONE   -> the react-native-audio-api library, which gets echo
+//                 cancellation for free via the phone's call mode.
 //
-// LIBRARY USED: react-native-audio-api (by Software Mansion). It copies
-// the "Web Audio" style used in browsers: you build a little chain of
-// "nodes" and connect them together like plugging in guitar pedals.
-//
-// >>> IMPORTANT FOR FUTURE BUILDS <<<
-// The exact method names below (createRecorderAdapter, createDelay, etc.)
-// match react-native-audio-api v0.12.x. If a future version renames them,
-// THIS is the only file you fix. The rest of the app stays untouched.
+// The rest of the app never knows or cares which one is running — it just
+// calls start/stop/etc. and the right engine handles it.
 // =====================================================================
 
-// Pull the three tools we need out of the audio library:
-//   AudioContext = the "workbench" we build the sound chain on.
-//   AudioRecorder = the live microphone source.
-//   AudioManager  = the phone-level settings (permissions, speaker routing).
+import { Platform } from 'react-native';                 // tells us android vs ios
+import AecMonitor from '../../modules/aec-monitor';       // our Kotlin module (null on iOS)
 import { AudioContext, AudioRecorder, AudioManager } from 'react-native-audio-api';
 
 // ---------------------------------------------------------------------
-// PRIVATE MEMORY (only this file can see these)
-// These variables remember the live audio pieces while the app runs.
-// They start as "null" which means "nothing built yet".
+// SHARED STATE (used by both engines)
 // ---------------------------------------------------------------------
-let context = null;       // the workbench (AudioContext) once we build it.
-let recorder = null;      // the live microphone once we open it.
-let delayNode = null;     // the delay buffer that holds sound for X milliseconds.
+let status = 'idle';            // 'idle' | 'starting' | 'running' | 'error'
+let lastError = null;           // last error message text, or null
+let statusListener = null;      // one function the app gives us to hear changes
+let pendingDelayMs = 300;       // remembered delay for the next start()
+let pendingEchoCancel = false;  // remembered echo-cancel choice
 
-// These remember the user's chosen settings even while the engine is OFF,
-// so that pressing START later uses the values they already picked.
-let pendingDelayMs = 300;   // start at 300 ms (a comfortable default delay).
-let pendingEchoCancel = false; // echo cancellation OFF by default (best for earbuds).
-
-// "status" is a single word describing what the engine is doing right now.
-// It is always one of: 'idle' | 'starting' | 'running' | 'error'.
-let status = 'idle';        // we begin stopped ("idle").
-let lastError = null;       // remembers the last error message, if any.
-
-// A place to remember ONE function the app gives us, so we can tell it
-// whenever the status changes (instead of the app constantly asking).
-let statusListener = null;
-
-// Helper: change the status word and, if the app asked to be told, tell it.
-// (This keeps the on-screen status line in sync with reality.)
+// Change the status and, if the app is listening, tell it.
 function setStatus(next) {
-  status = next;                       // remember the new status word.
-  if (statusListener) {                // if the app gave us a function to call...
-    statusListener(status);            // ...call it with the new status.
-  }
+  status = next;
+  if (statusListener) statusListener(status);
 }
 
 // =====================================================================
-// start(options) — TURN THE MONITOR ON
-// Builds the mic -> delay -> speaker chain and begins playing.
-// options = { delayMs: number, echoCancel: boolean }
+// ANDROID ENGINE — talks to our Kotlin "AecMonitor" module
 // =====================================================================
-async function start(options) {
-  // If we are already running, do nothing (pressing START twice is harmless).
-  if (status === 'running' || status === 'starting') return;
+const androidEngine = {
+  async start(delayMs, echoCancel) {
+    // Ask the Kotlin side to open the mic+speaker and begin the delay loop.
+    // (Android shows the microphone permission popup automatically on first use.)
+    await AecMonitor.start(delayMs, echoCancel);
+  },
+  async stop() {
+    // Tell Kotlin to stop the loop and hand the mic/speaker back.
+    if (AecMonitor) await AecMonitor.stop();
+  },
+  setDelay(ms) {
+    // Retune the live delay belt over in Kotlin (no glitch, no rebuild).
+    if (AecMonitor) AecMonitor.setDelay(ms);
+  },
+  async restartForEcho(delayMs, echoCancel) {
+    // Android applies echo on/off when the mic opens, so flipping it means
+    // a quick stop + start with the new setting.
+    await this.stop();
+    await this.start(delayMs, echoCancel);
+  },
+};
 
-  // Read the requested settings; if missing, fall back to remembered ones.
-  pendingDelayMs = options?.delayMs ?? pendingDelayMs;        // chosen delay.
-  pendingEchoCancel = options?.echoCancel ?? pendingEchoCancel; // chosen AEC.
+// =====================================================================
+// iPHONE ENGINE — builds a Web-Audio-style chain with react-native-audio-api
+// (This is the original engine; it only runs on iOS.)
+// =====================================================================
+let ctx = null;        // the audio "workbench"
+let recorder = null;   // the live mic
+let delayNode = null;  // the delay buffer
 
-  // Tell everyone we are in the middle of starting up.
-  setStatus('starting');
-
-  // We wrap the risky setup in try/catch so a failure becomes a clean error
-  // instead of crashing the app.
-  try {
-    // STEP 1: Ask the user for permission to use the microphone. The phone
-    // shows a popup the first time. Without this, recording is blocked.
+const iosEngine = {
+  async start(delayMs, echoCancel) {
+    // Ask for mic permission.
     await AudioManager.requestRecordingPermissions();
-
-    // STEP 2: Tell the phone how we want to use audio:
-    //   playAndRecord = use mic and speaker at the same time.
-    //   iosMode 'voiceChat' = on iPhones, turn ON the OS echo cancellation
-    //       (the same trick phone calls use so you don't hear yourself).
-    //       NOTE: on Android this does NOT enable echo cancellation — the
-    //       library does not expose that yet, so on Android use earbuds.
-    //   allowBluetoothHFP = let Bluetooth earbuds work.
-    //   defaultToSpeaker  = if no earbuds, play out the loud speaker.
+    // Put iOS in play+record. 'voiceChat' turns ON Apple's echo cancellation.
     AudioManager.setAudioSessionOptions({
       iosCategory: 'playAndRecord',
-      iosMode: pendingEchoCancel ? 'voiceChat' : 'default',
+      iosMode: echoCancel ? 'voiceChat' : 'default',
       iosOptions: ['allowBluetoothHFP', 'defaultToSpeaker'],
     });
-
-    // STEP 3: Build the "workbench" we connect everything on.
-    context = new AudioContext();
-
-    // STEP 4: Build the DELAY BUFFER. The number (2.0) is the MAXIMUM delay
-    // in seconds we allow — 2 seconds comfortably covers our 1000 ms top end.
-    delayNode = context.createDelay(2.0);
-
-    // Set the starting delay. The library works in SECONDS, but our app
-    // thinks in MILLISECONDS, so we divide by 1000 (1000 ms = 1 second).
-    delayNode.delayTime.value = pendingDelayMs / 1000;
-
-    // STEP 5: Build a "bridge" node. The live microphone can't plug straight
-    // into the chain; this adapter is the socket it plugs into.
-    const adapter = context.createRecorderAdapter();
-
-    // STEP 6: Wire the pedals together, in order:
-    //   bridge -> delay buffer ...
+    // Build the chain: mic -> bridge -> delay -> speaker.
+    ctx = new AudioContext();
+    delayNode = ctx.createDelay(2.0);                 // up to 2s of delay
+    delayNode.delayTime.value = delayMs / 1000;       // library uses seconds
+    const adapter = ctx.createRecorderAdapter();
     adapter.connect(delayNode);
-    //   ... delay buffer -> the speaker/earbuds (the "destination").
-    delayNode.connect(context.destination);
-
-    // STEP 7: Open the actual microphone and plug it into the bridge.
-    recorder = new AudioRecorder({
-      sampleRate: 48000,   // 48000 samples/sec = standard high-quality audio.
-      bufferLengthInSamples: 1024, // small chunks = lower latency (snappier).
-    });
+    delayNode.connect(ctx.destination);
+    recorder = new AudioRecorder({ sampleRate: 48000, bufferLengthInSamples: 1024 });
     recorder.connect(adapter);
-
-    // STEP 8: Some phones start the workbench "paused". Wake it up.
-    if (context.state === 'suspended') {
-      await context.resume();
-    }
-
-    // STEP 9: Press play on the microphone. Sound now flows continuously:
-    //   mic -> bridge -> delay -> speaker. The monitor is LIVE.
+    if (ctx.state === 'suspended') await ctx.resume();
     recorder.start();
+  },
+  async stop() {
+    try { if (recorder) recorder.stop(); } catch (_) {}
+    try { if (ctx) await ctx.close(); } catch (_) {}
+    recorder = null; ctx = null; delayNode = null;
+  },
+  setDelay(ms) {
+    if (delayNode && ctx) delayNode.delayTime.setValueAtTime(ms / 1000, ctx.currentTime);
+  },
+  async restartForEcho(delayMs, echoCancel) {
+    await this.stop();
+    await this.start(delayMs, echoCancel);
+  },
+};
 
-    // Tell everyone we are now fully running.
+// Pick the right engine ONCE, based on the phone we're on.
+const impl = Platform.OS === 'android' ? androidEngine : iosEngine;
+
+// =====================================================================
+// THE PUBLIC FIVE FUNCTIONS (same contract on every phone)
+// =====================================================================
+
+async function start(options) {
+  if (status === 'running' || status === 'starting') return;   // already on
+  pendingDelayMs = options?.delayMs ?? pendingDelayMs;
+  pendingEchoCancel = options?.echoCancel ?? pendingEchoCancel;
+  setStatus('starting');
+  try {
+    await impl.start(pendingDelayMs, pendingEchoCancel);
     setStatus('running');
   } catch (err) {
-    // If anything above failed (e.g. mic permission denied), record why,
-    // clean up any half-built pieces, and report an error state.
     lastError = err?.message ?? 'Could not start audio.';
-    await stop();              // tear down whatever was created.
-    setStatus('error');        // show the error state to the app.
-    throw err;                 // also pass the error up so callers can see it.
+    await stop();
+    setStatus('error');
+    throw err;
   }
 }
 
-// =====================================================================
-// stop() — TURN THE MONITOR OFF
-// Stops playback, releases the mic, and frees the audio workbench so the
-// phone is fully quiet and nothing keeps secretly recording.
-// =====================================================================
 async function stop() {
-  // STEP 1: Stop the microphone if it exists.
-  try {
-    if (recorder) recorder.stop();
-  } catch (_) { /* ignore — we are tearing down anyway. */ }
-
-  // STEP 2: Close the workbench if it exists (this frees the speaker too).
-  try {
-    if (context) await context.close();
-  } catch (_) { /* ignore — we are tearing down anyway. */ }
-
-  // STEP 3: Forget all the pieces so the next start() builds fresh ones.
-  recorder = null;
-  context = null;
-  delayNode = null;
-
-  // STEP 4: Unless we are reporting an error, mark ourselves stopped.
+  try { await impl.stop(); } catch (_) {}
   if (status !== 'error') setStatus('idle');
 }
 
-// =====================================================================
-// setDelay(ms) — CHANGE THE DELAY WHILE RUNNING (no glitch)
-// IMPORTANT: this only NUDGES the existing delay buffer. It never rebuilds
-// the chain, because rebuilding on every slider wiggle would crackle.
-// =====================================================================
 function setDelay(ms) {
-  // Always remember the latest value for the next time we start.
-  pendingDelayMs = ms;
-
-  // If we are running, retune the live delay buffer smoothly.
-  if (delayNode && context) {
-    // "setValueAtTime" changes the delay cleanly at the current moment,
-    // which avoids clicks. We divide by 1000 to turn ms into seconds.
-    delayNode.delayTime.setValueAtTime(ms / 1000, context.currentTime);
-  }
+  pendingDelayMs = ms;                 // always remember the latest value
+  impl.setDelay(ms);                   // retune live if running
 }
 
-// =====================================================================
-// setEchoCancel(enabled) — TURN OS ECHO CANCELLATION ON/OFF
-// Echo cancellation tries to stop the speaker sound from feeding back into
-// the mic (which causes a howl). On iPhone this works via call-mode. On
-// Android the library can't do it yet, so earbuds are the real fix there.
-// Because the setting is chosen when the audio session opens, flipping it
-// while running means we quickly stop and start again to re-apply it.
-// =====================================================================
 async function setEchoCancel(enabled) {
-  // Remember the choice for the next start().
   pendingEchoCancel = enabled;
-
-  // If we are live right now, restart so the new setting takes effect.
   if (status === 'running') {
-    await stop();                                   // tear down...
-    await start({ delayMs: pendingDelayMs, echoCancel: enabled }); // ...rebuild.
+    // Re-apply by quickly restarting with the new setting.
+    await impl.restartForEcho(pendingDelayMs, enabled);
   }
 }
 
-// =====================================================================
-// getStatus() — REPORT WHAT WE ARE DOING
-// Returns one word so the screen can show the right message and colour.
-// =====================================================================
 function getStatus() {
-  return status;   // 'idle' | 'starting' | 'running' | 'error'.
+  return status;
 }
 
-// Optional helper: let the app hand us ONE function to be called every time
-// the status changes. This keeps the on-screen status perfectly in sync.
 function onStatusChange(callback) {
-  statusListener = callback;     // remember the function (or null to clear).
+  statusListener = callback;
 }
 
-// Optional helper: let the app read the last error message to display it.
 function getLastError() {
-  return lastError;              // a text message, or null if no error.
+  return lastError;
 }
 
-// =====================================================================
-// THE PUBLIC DOOR: bundle the five core functions (plus two helpers) into
-// one object and hand it out. The rest of the app only ever uses these.
-// =====================================================================
 export default {
-  start,            // turn monitor on
-  stop,             // turn monitor off
-  setDelay,         // change delay live
-  setEchoCancel,    // toggle echo cancellation
-  getStatus,        // read current status word
-  onStatusChange,   // subscribe to status changes
-  getLastError,     // read last error message
+  start, stop, setDelay, setEchoCancel, getStatus, onStatusChange, getLastError,
 };

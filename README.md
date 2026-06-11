@@ -12,7 +12,7 @@ tuned deliberately and controllable in real time — plus a live tuner so you ca
 *see* your pitch while you correct it.
 
 <p align="center">
-  <img src="docs/screenshots/slapback.png" alt="Slapback — live delayed vocal monitor with waveform and tuner" width="320">
+  <img src="docs/screenshots/slapback.jpg" alt="Slapback — live delayed vocal monitor with waveform and tuner" width="320">
 </p>
 
 ---
@@ -89,14 +89,41 @@ The signal path is dead simple:
 
 ```
 microphone → delay buffer → earbuds / speaker
+            └→ analyser → pitch detector → note + tuner
 ```
 
-The code is split into three clear layers — the screen, a small control hook,
-and a single audio-engine module that is the only thing touching the mic and
-speaker. See [`docs/CONTEXT.md`](docs/CONTEXT.md) for the full architecture.
+A read-only "tap" on the live mic feeds a pitch detector that runs ~10 times a
+second: it finds the repeating period of your voice, converts it to a note and
+how sharp/flat you are, and drives the on-screen waveform and tuner — without
+touching the sound you hear.
+
+The code is split into clear layers — the screen, small control hooks, and
+single boundary modules that are the only things touching the mic or the
+detector. See [`docs/CONTEXT.md`](docs/CONTEXT.md) for the full architecture.
 
 Built with [Expo](https://expo.dev) and
 [react-native-audio-api](https://github.com/software-mansion/react-native-audio-api).
+
+---
+
+## Built in the open — live, AI-assisted debugging
+
+This app was built and debugged **live on a real phone**, with the app streaming
+its own analysis to a log that could be read in real time. When the tuner wouldn't
+lock onto a note, nothing was guessed — the app logged the actual numbers coming
+off the mic, ~10 times a second, and the fix followed straight from the data:
+
+```
+LOG  [pitch] t=15  level=0.009  rawHz=null    note=-      ← silence, nothing to detect
+LOG  [pitch] t=30  level=0.610  rawHz=116.5   note=A#2    ← singing — locked on
+LOG  [pitch] t=45  level=0.715  rawHz=117.1   note=A#2
+```
+
+Your voice becomes three numbers — a loudness, a frequency, and a note — many
+times a second. Watching the *real values* (not assumptions) is what turned a
+vague "it's frozen" into a precise, one-line fix. The full live-reload +
+log-driven method is written up in
+[`docs/DEV_WORKFLOW.md`](docs/DEV_WORKFLOW.md).
 
 ---
 
